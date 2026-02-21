@@ -11,6 +11,28 @@
         .hero-card { transition: transform 0.2s, filter 0.2s; cursor: pointer; }
         .hero-card:hover { transform: scale(1.05); }
         .banned { filter: grayscale(100%) opacity(0.5); pointer-events: none; }
+
+        /* Coin Toss Animation */
+        .coin-container { perspective: 1000px; width: 200px; height: 200px; margin: 2rem auto; }
+        .coin {
+            width: 100%; height: 100%; position: relative;
+            transform-style: preserve-3d;
+            transition: transform 5s cubic-bezier(0.1, 0.5, 0.1, 1);
+        }
+        .coin div {
+            position: absolute; width: 100%; height: 100%;
+            border-radius: 50%; backface-visibility: hidden;
+            display: flex; align-items: center; justify-content: center;
+            font-size: 2rem; font-weight: bold; border: 8px solid #f97316;
+        }
+        .coin-front { background: #1e293b; color: #f97316; }
+        .coin-back { background: #f97316; color: #1e293b; transform: rotateY(180deg); }
+        
+        @keyframes spin-to-front { from { transform: rotateY(0); } to { transform: rotateY(1800deg); } }
+        @keyframes spin-to-back { from { transform: rotateY(0); } to { transform: rotateY(1980deg); } }
+        
+        .spinning-front { animation: spin-to-front 5s forwards cubic-bezier(0.1, 0.5, 0.1, 1); }
+        .spinning-back { animation: spin-to-back 5s forwards cubic-bezier(0.1, 0.5, 0.1, 1); }
     </style>
 </head>
 <body class="p-8 text-center flex flex-col items-center min-h-screen">
@@ -25,33 +47,23 @@
         const socket = io();
         const appDiv = document.getElementById('app');
         
-        // Web Audio API for synthetic sounds (No external files needed!)
-        const audioCtx = new (window.AudioContext || window.webkitAudioContext)();
-        
-        function playTurnSound() {
-            if (audioCtx.state === 'suspended') audioCtx.resume();
-            const osc = audioCtx.createOscillator();
-            osc.type = 'sine';
-            osc.frequency.setValueAtTime(600, audioCtx.currentTime);
-            osc.frequency.exponentialRampToValueAtTime(800, audioCtx.currentTime + 0.1);
-            osc.connect(audioCtx.destination);
-            osc.start();
-            osc.stop(audioCtx.currentTime + 0.3);
+        function playSfx(path) {
+            const audio = new Audio(path);
+            audio.play().catch(e => console.warn("Audio play blocked until user interaction:", e));
         }
 
-        function playTickSound() {
-            if (audioCtx.state === 'suspended') audioCtx.resume();
-            const osc = audioCtx.createOscillator();
-            osc.type = 'triangle';
-            osc.frequency.setValueAtTime(400, audioCtx.currentTime);
-            osc.connect(audioCtx.destination);
-            osc.start();
-            osc.stop(audioCtx.currentTime + 0.05);
+        // Hero Categories
+        const heroRoles = {
+            "Tank": ["Domina", "Doomfist", "D.Va", "Hazard", "Junker Queen", "Mauga", "Orisa", "Ramattra", "Reinhardt", "Roadhog", "Sigma", "Winston", "Wrecking Ball", "Zarya"],
+            "Damage": ["Anran", "Ashe", "Bastion", "Cassidy", "Echo", "Emre", "Freja", "Genji", "Hanzo", "Junkrat", "Mei", "Pharah", "Reaper", "Sojourn", "Soldier 76", "Sombra", "Symettra", "Torbjorn", "Tracer", "Vendetta", "Venture", "Widowmaker"],
+            "Support": ["Ana", "Baptiste", "Brigitte", "Illari", "Jetpack Cat", "Juno", "Kiriko", "Lifeweaver", "Lucio", "Mercy", "Mizuki", "Moira", "Wuyang", "Zenyatta"]
+        };
+
+        function getHeroPath(name, role) {
+            const filename = name.toLowerCase().replace(/[\s\.]/g, '') + '.png';
+            return `/avatars/${role.toLowerCase()}/${filename}`;
         }
 
-        // Expanded Roster (You can add the rest!)
-        const heroes = ["Ana", "Ashe", "Baptiste", "Cassidy", "D.Va", "Doomfist", "Genji", "Kiriko", "Lucio", "Mercy", "Reinhardt", "Tracer", "Widowmaker", "Winston"];
-        
         let localState = {};
         let myId = null;
         let lastTimer = 60;
@@ -59,25 +71,60 @@
         socket.on('connect', () => { myId = socket.id; });
 
         socket.on('state_update', (state) => {
+            const oldPhase = localState.phase;
+            const oldTimer = localState.timer;
             localState = state;
             render();
 
-            // Handle ticking sound
-            if (state.phase === 'banning' && state.timer <= 10 && state.timer !== lastTimer) {
-                playTickSound();
+            // 1. Coin Flip Sound
+            if (state.phase === 'toss' && oldPhase !== 'toss') {
+                playSfx('/sound/coinflip.mp3');
             }
+
+            // 2. Winner/Loser Voices
+            if (state.phase === 'toss_result' && oldPhase !== 'toss_result') {
+                if (state.tossWinner === myId) {
+                    playSfx('/sound/winston-oh-yeah.ogg');
+                } else {
+                    playSfx('/sound/widowmaker-sorry.ogg');
+                }
+            }
+
+            // 3. Transition & Choose Announcement
+            if (state.phase === 'banning' && oldPhase === 'toss_result') {
+                playSfx('/sound/transition.wav');
+                setTimeout(() => playSfx('/sound/choosetoban.wav'), 600);
+            }
+
+            // 4. Tick & Countdown Sound (Every second during banning phase)
+            if (state.phase === 'banning' && state.timer !== oldTimer) {
+                if (state.timer >= 1 && state.timer <= 5) {
+                    playSfx(`/sound/${state.timer}.ogg`);
+                } else {
+                    playSfx('/sound/1secondtick.wav');
+                }
+            }
+            
             lastTimer = state.timer;
         });
 
         function joinAsCaptain() {
             const name = document.getElementById('teamName').value || 'Captain';
-            audioCtx.resume(); // Unlock audio on user interaction
+            // Play a dummy sound to unlock audio context on mobile/modern browsers
+            const unlock = new Audio();
+            unlock.play().catch(() => {});
             socket.emit('join_captain', name);
         }
 
         function banHero(heroName) {
             if (localState.turn === myId) {
                 socket.emit('ban_hero', heroName);
+            }
+        }
+
+        function skipTurn() {
+            if (localState.turn === myId) {
+                socket.emit('skip_turn');
             }
         }
 
@@ -93,11 +140,44 @@
                     </div>
                 `;
             } 
+            else if (localState.phase === 'toss') {
+                const isWinnerFront = localState.tossWinner === localState.players[0].id;
+
+                appDiv.innerHTML = `
+                    <div class="bg-slate-800 p-12 rounded-lg shadow-2xl">
+                        <h3 class="text-3xl font-bold mb-8 uppercase tracking-widest text-orange-400">Determining First Pick...</h3>
+                        <div class="coin-container">
+                            <div class="coin ${isWinnerFront ? 'spinning-front' : 'spinning-back'}">
+                                <div class="coin-front text-xs">${localState.players[0].name.substring(0, 10)}</div>
+                                <div class="coin-back text-xs">${localState.players[1].name.substring(0, 10)}</div>
+                            </div>
+                        </div>
+                        <p class="mt-8 text-xl text-gray-300 animate-pulse">Good Luck, Captains!</p>
+                    </div>
+                `;
+            }
+            else if (localState.phase === 'toss_result') {
+                const winner = localState.players.find(p => p.id === localState.tossWinner);
+                const isMe = localState.tossWinner === myId;
+                
+                appDiv.innerHTML = `
+                    <div class="bg-slate-800 p-12 rounded-lg shadow-2xl border-4 ${isMe ? 'border-green-500' : 'border-red-500'}">
+                        <h3 class="text-5xl font-black mb-4 uppercase ${isMe ? 'text-green-500' : 'text-red-500'}">
+                            ${isMe ? 'YOU WON THE TOSS!' : 'YOU LOST THE TOSS!'}
+                        </h3>
+                        <p class="text-2xl text-gray-300">
+                            <span class="font-bold text-white">${winner.name}</span> team captain has won the toss!
+                        </p>
+                        <div class="mt-8 text-lg text-gray-500 uppercase tracking-widest">
+                            Drafting begins in 3 seconds...
+                        </div>
+                    </div>
+                `;
+            }
             else if (localState.phase === 'banning') {
                 const isMyTurn = localState.turn === myId;
                 const turnPlayer = localState.players.find(p => p.id === localState.turn);
                 
-                // Play sound if it just became my turn
                 if (isMyTurn && lastTimer === 60) playTurnSound();
 
                 let html = `
@@ -107,46 +187,72 @@
                         </h3>
                         <div class="text-5xl font-mono mt-2 ${localState.timer <= 10 ? 'text-red-500 animate-pulse' : 'text-white'}">${localState.timer}s</div>
                     </div>
-                    <div class="flex justify-center gap-4 mb-8">
-                        <p>Bans so far: ${localState.bans.length}/4</p>
+                    <div class="flex flex-col items-center gap-2 mb-8">
+                        <p class="text-gray-400">Turn ${localState.turnCount + 1} of 4</p>
+                        ${isMyTurn ? `
+                            <button onclick="skipTurn()" class="bg-slate-600 hover:bg-slate-500 text-white font-bold py-1 px-4 rounded text-sm transition-colors uppercase tracking-wider">
+                                Skip Turn
+                            </button>
+                        ` : ''}
                     </div>
-                    <div class="grid grid-cols-4 md:grid-cols-7 gap-4">
                 `;
 
-                heroes.forEach(hero => {
-                    const isBanned = localState.bans.find(b => b.hero === hero);
-                    // Using UI Avatars for dynamic placeholders. Replace URL with your actual Overwatch image assets.
-                    const imgUrl = `https://ui-avatars.com/api/?name=${hero}&background=random&color=fff&size=128`;
-                    
+                for (const [role, heroes] of Object.entries(heroRoles)) {
                     html += `
-                        <div class="hero-card ${isBanned ? 'banned' : ''}" onclick="banHero('${hero}')">
-                            <img src="${imgUrl}" alt="${hero}" class="rounded-lg border-2 border-slate-700 w-full">
-                            <p class="mt-1 text-sm font-semibold">${hero}</p>
-                        </div>
+                        <div class="mb-8">
+                            <h4 class="text-left text-xl font-bold text-gray-400 mb-4 border-l-4 border-orange-500 pl-4 uppercase tracking-widest">${role}</h4>
+                            <div class="grid grid-cols-4 md:grid-cols-7 lg:grid-cols-10 gap-4">
                     `;
-                });
-                html += `</div>`;
+                    
+                    heroes.forEach(hero => {
+                        const isBanned = localState.bans.find(b => b.hero === hero);
+                        const imgUrl = getHeroPath(hero, role);
+                        
+                        html += `
+                            <div class="hero-card ${isBanned ? 'banned' : ''}" onclick="banHero('${hero}')">
+                                <img src="${imgUrl}" alt="${hero}" class="rounded-full border-2 border-slate-700 w-full aspect-square object-cover bg-slate-900">
+                                <p class="mt-1 text-[10px] font-semibold uppercase tracking-tighter text-gray-300 truncate">${hero}</p>
+                            </div>
+                        `;
+                    });
+                    html += `</div></div>`;
+                }
                 appDiv.innerHTML = html;
             }
             else if (localState.phase === 'finished') {
-                // Deduplicate bans using a Set
                 const uniqueBans = [...new Set(localState.bans.map(b => b.hero))];
                 
                 let html = `
                     <div class="bg-slate-800 p-8 rounded-lg shadow-xl">
-                        <h3 class="text-4xl text-orange-500 font-bold mb-6 border-b border-gray-600 pb-4">FINAL BANNED HEROES</h3>
-                        <div class="flex justify-center gap-8 mt-6">
+                        <h3 class="text-4xl text-orange-500 font-bold mb-6 border-b border-gray-600 pb-4 uppercase tracking-widest">
+                            ${uniqueBans.length > 0 ? 'Final Banned Heroes' : 'No Heroes Banned'}
+                        </h3>
+                        <div class="flex flex-wrap justify-center gap-8 mt-6">
                 `;
 
-                uniqueBans.forEach(hero => {
-                    const imgUrl = `https://ui-avatars.com/api/?name=${hero}&background=random&color=fff&size=128`;
+                if (uniqueBans.length > 0) {
+                    uniqueBans.forEach(hero => {
+                        // Find role to get correct path
+                        let role = "Damage";
+                        for (const [r, list] of Object.entries(heroRoles)) {
+                            if (list.includes(hero)) { role = r; break; }
+                        }
+                        const imgUrl = getHeroPath(hero, role);
+                        html += `
+                            <div class="text-center">
+                                <img src="${imgUrl}" alt="${hero}" class="rounded-full border-4 border-red-600 w-32 h-32 mx-auto shadow-[0_0_15px_rgba(220,38,38,0.7)] object-cover bg-slate-900">
+                                <p class="mt-3 text-xl font-bold text-gray-200">${hero}</p>
+                            </div>
+                        `;
+                    });
+                } else {
                     html += `
-                        <div class="text-center">
-                            <img src="${imgUrl}" alt="${hero}" class="rounded-full border-4 border-red-600 w-32 h-32 mx-auto shadow-[0_0_15px_rgba(220,38,38,0.7)]">
-                            <p class="mt-3 text-xl font-bold text-gray-200">${hero}</p>
+                        <div class="py-12 px-6 border-2 border-dashed border-slate-600 rounded-lg w-full">
+                            <p class="text-2xl text-gray-400 italic">No heroes were selected for banning during this session.</p>
+                            <p class="text-sm text-gray-500 mt-2 uppercase tracking-widest">All heroes remain available for this match.</p>
                         </div>
                     `;
-                });
+                }
 
                 html += `</div></div>`;
                 appDiv.innerHTML = html;
