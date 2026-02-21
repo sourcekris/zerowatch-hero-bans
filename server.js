@@ -9,11 +9,13 @@ const io = new Server(server);
 app.use(express.static('public'));
 
 let state = {
-    phase: 'waiting', // waiting, banning, finished
+    phase: 'waiting', // waiting, toss, toss_result, banning, finished
     players: [],
     turn: null,
     bans: [], // { player: socketId, hero: string }
-    timer: 60
+    timer: 60,
+    turnCount: 0,
+    tossWinner: null
 };
 
 let timerInterval;
@@ -33,7 +35,8 @@ function startTimer() {
 }
 
 function switchTurn() {
-    if (state.bans.length >= 4) {
+    state.turnCount++;
+    if (state.turnCount >= 4) {
         state.phase = 'finished';
         clearInterval(timerInterval);
     } else {
@@ -50,13 +53,34 @@ io.on('connection', (socket) => {
         if (state.players.length < 2) {
             state.players.push({ id: socket.id, name });
             if (state.players.length === 2) {
-                // Coin toss
-                state.phase = 'banning';
-                const firstPick = Math.random() < 0.5 ? 0 : 1;
-                state.turn = state.players[firstPick].id;
-                startTimer();
+                // Coin toss sequence
+                state.phase = 'toss';
+                const winnerIdx = Math.random() < 0.5 ? 0 : 1;
+                state.tossWinner = state.players[winnerIdx].id;
+                state.turn = state.tossWinner;
+                
+                io.emit('state_update', state);
+
+                // Wait 5 seconds for animation before showing result
+                setTimeout(() => {
+                    if (state.players.length === 2) {
+                        state.phase = 'toss_result';
+                        io.emit('state_update', state);
+
+                        // Wait another 3 seconds for result announcement before starting bans
+                        setTimeout(() => {
+                            if (state.players.length === 2) {
+                                state.phase = 'banning';
+                                state.turnCount = 0;
+                                startTimer();
+                                io.emit('state_update', state);
+                            }
+                        }, 3000);
+                    }
+                }, 5000);
+            } else {
+                io.emit('state_update', state);
             }
-            io.emit('state_update', state);
         }
     });
 
@@ -70,11 +94,18 @@ io.on('connection', (socket) => {
         }
     });
 
+    socket.on('skip_turn', () => {
+        if (state.phase === 'banning' && state.turn === socket.id) {
+            switchTurn();
+        }
+    });
+
     socket.on('disconnect', () => {
         state.players = state.players.filter(p => p.id !== socket.id);
         if (state.players.length < 2) {
             state.phase = 'waiting';
             state.bans = [];
+            state.turnCount = 0;
             clearInterval(timerInterval);
             io.emit('state_update', state);
         }
